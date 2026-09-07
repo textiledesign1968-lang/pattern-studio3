@@ -203,6 +203,6 @@ if generate:
             mime="image/png"
         )
 
-        st.success("Pattern generated.")
+        st.success("Pattern generated. Use Freeform for designing, then switch layouts for repeat.")
 else:
     st.info("Upload motifs, adjust controls, then click Generate Pattern.")
