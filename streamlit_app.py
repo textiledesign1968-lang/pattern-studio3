@@ -1,633 +1,725 @@
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageOps
 import io
 import math
+import random
 
 # ============================================================
 # PATTERN STUDIO
-# Multi-Motif Seamless Repeat Generator
 # ============================================================
 
 st.set_page_config(
     page_title="Pattern Studio",
-    page_icon="🌸",
+    page_icon="✦",
     layout="wide"
 )
 
-# ------------------------------------------------------------
-# APP TITLE
-# ------------------------------------------------------------
-
-st.title("🌸 Pattern Studio")
-st.caption("Multi-Motif Seamless Repeat Generator")
-
-# ------------------------------------------------------------
+# ============================================================
 # SESSION STATE
-# ------------------------------------------------------------
+# ============================================================
 
 if "motifs" not in st.session_state:
     st.session_state.motifs = []
 
-if "layout" not in st.session_state:
-    st.session_state.layout = "Free Arrange"
+if "next_id" not in st.session_state:
+    st.session_state.next_id = 1
 
-if "tile_size" not in st.session_state:
-    st.session_state.tile_size = 1200
-
-# ------------------------------------------------------------
-# HELPER FUNCTIONS
-# ------------------------------------------------------------
-
-def hex_to_rgb(hex_color):
-    hex_color = hex_color.lstrip("#")
-    return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+if "seed" not in st.session_state:
+    st.session_state.seed = 42
 
 
-def resize_and_rotate(image, scale, rotation):
-    new_width = max(1, int(image.width * scale))
-    new_height = max(1, int(image.height * scale))
+# ============================================================
+# FUNCTIONS
+# ============================================================
 
-    resized = image.resize(
+def create_motif(image, name):
+    """Create a motif record."""
+    motif = {
+        "id": st.session_state.next_id,
+        "name": name,
+        "image": image.convert("RGBA"),
+        "x": 50.0,
+        "y": 50.0,
+        "scale": 100,
+        "rotation": 0,
+        "visible": True,
+    }
+
+    st.session_state.next_id += 1
+    return motif
+
+
+def resize_motif(image, scale):
+    """Resize motif according to percentage."""
+    width, height = image.size
+
+    new_width = max(1, int(width * scale / 100))
+    new_height = max(1, int(height * scale / 100))
+
+    return image.resize(
         (new_width, new_height),
-        Image.LANCZOS
+        Image.Resampling.LANCZOS
     )
 
-    if rotation != 0:
-        resized = resized.rotate(
-            rotation,
-            expand=True,
-            resample=Image.BICUBIC
-        )
 
-    return resized
+def rotate_motif(image, angle):
+    """Rotate motif while preserving transparency."""
+    return image.rotate(
+        angle,
+        expand=True,
+        resample=Image.Resampling.BICUBIC
+    )
 
 
-def paste_with_wrap(canvas, image, x, y):
+def paste_wrapped(canvas, motif, x, y):
     """
-    Paste motif with wraparound so motifs crossing an edge
-    also appear on the opposite side of the repeat tile.
+    Paste a motif onto a repeating tile.
+
+    If the motif crosses an edge, the appropriate portion
+    automatically appears on the opposite side.
     """
 
-    w = canvas.width
-    h = canvas.height
+    canvas_width, canvas_height = canvas.size
+    motif_width, motif_height = motif.size
 
-    x = int(x)
-    y = int(y)
+    # Center motif on x/y position.
+    left = int((x / 100) * canvas_width - motif_width / 2)
+    top = int((y / 100) * canvas_height - motif_height / 2)
 
-    positions = [
-        (x, y),
-        (x - w, y),
-        (x + w, y),
-        (x, y - h),
-        (x, y + h),
-        (x - w, y - h),
-        (x + w, y - h),
-        (x - w, y + h),
-        (x + w, y + h),
-    ]
+    # Positions to paste so edges wrap.
+    x_positions = [left]
 
-    for px, py in positions:
-        canvas.alpha_composite(image, (px, py))
+    if left < 0:
+        x_positions.append(left + canvas_width)
+
+    if left + motif_width > canvas_width:
+        x_positions.append(left - canvas_width)
+
+    y_positions = [top]
+
+    if top < 0:
+        y_positions.append(top + canvas_height)
+
+    if top + motif_height > canvas_height:
+        y_positions.append(top - canvas_height)
+
+    for px in x_positions:
+        for py in y_positions:
+            canvas.alpha_composite(motif, (px, py))
 
 
-def build_pattern():
-    tile = st.session_state.tile_size
+def draw_single_motif(canvas, motif):
+    """Draw one motif with wrapping."""
+    if not motif["visible"]:
+        return
 
-    bg = hex_to_rgb(st.session_state.background_color)
+    img = resize_motif(
+        motif["image"],
+        motif["scale"]
+    )
+
+    img = rotate_motif(
+        img,
+        motif["rotation"]
+    )
+
+    paste_wrapped(
+        canvas,
+        img,
+        motif["x"],
+        motif["y"]
+    )
+
+
+def make_tile(width, height, background, motifs, layout):
+    """Create one complete repeating tile."""
 
     canvas = Image.new(
         "RGBA",
-        (tile, tile),
-        bg + (255,)
+        (width, height),
+        background
     )
 
-    motifs = st.session_state.motifs
+    if layout == "Grid / Straight":
 
-    # --------------------------------------------------------
-    # FREE ARRANGE
-    # --------------------------------------------------------
+        for motif in motifs:
+            draw_single_motif(canvas, motif)
 
-    if st.session_state.layout == "Free Arrange":
+    elif layout == "Half-Drop":
+
+        # Original column
+        for motif in motifs:
+            draw_single_motif(canvas, motif)
+
+        # Half-drop copy
+        for motif in motifs:
+
+            shifted = motif.copy()
+
+            shifted["x"] = (
+                motif["x"] + 50
+            ) % 100
+
+            shifted["y"] = (
+                motif["y"] + 50
+            ) % 100
+
+            draw_single_motif(
+                canvas,
+                shifted
+            )
+
+    elif layout == "Brick / Half-Brick":
+
+        for motif in motifs:
+            draw_single_motif(canvas, motif)
+
+        # Horizontal half-brick
+        for motif in motifs:
+
+            shifted = motif.copy()
+
+            shifted["x"] = (
+                motif["x"] + 50
+            ) % 100
+
+            draw_single_motif(
+                canvas,
+                shifted
+            )
+
+    elif layout == "Mirror":
 
         for motif in motifs:
 
-            img = resize_and_rotate(
-                motif["image"],
-                motif["scale"],
-                motif["rotation"]
-            )
-
-            x = int(
-                motif["x"] * tile / 100
-                - img.width / 2
-            )
-
-            y = int(
-                motif["y"] * tile / 100
-                - img.height / 2
-            )
-
-            paste_with_wrap(
+            draw_single_motif(
                 canvas,
-                img,
-                x,
-                y
+                motif
             )
 
-    # --------------------------------------------------------
-    # GRID
-    # --------------------------------------------------------
+            mirrored = motif.copy()
 
-    elif st.session_state.layout == "Grid":
-
-        count = len(motifs)
-
-        if count == 0:
-            return canvas
-
-        columns = math.ceil(math.sqrt(count))
-        rows = math.ceil(count / columns)
-
-        cell_w = tile / columns
-        cell_h = tile / rows
-
-        for i, motif in enumerate(motifs):
-
-            col = i % columns
-            row = i // columns
-
-            img = resize_and_rotate(
-                motif["image"],
-                motif["scale"],
-                motif["rotation"]
+            mirrored["x"] = (
+                100 - motif["x"]
             )
 
-            x = int(
-                col * cell_w
-                + cell_w / 2
-                - img.width / 2
+            mirrored["rotation"] = (
+                -motif["rotation"]
             )
 
-            y = int(
-                row * cell_h
-                + cell_h / 2
-                - img.height / 2
-            )
-
-            paste_with_wrap(
+            draw_single_motif(
                 canvas,
-                img,
-                x,
-                y
+                mirrored
             )
 
-    # --------------------------------------------------------
-    # BRICK
-    # --------------------------------------------------------
+    elif layout == "Scatter":
 
-    elif st.session_state.layout == "Brick":
+        rng = random.Random(
+            st.session_state.seed
+        )
 
-        count = len(motifs)
+        for motif in motifs:
 
-        if count == 0:
-            return canvas
-
-        columns = 3
-        rows = math.ceil(count / columns)
-
-        cell_w = tile / columns
-        cell_h = tile / rows
-
-        for i, motif in enumerate(motifs):
-
-            col = i % columns
-            row = i // columns
-
-            offset = 0
-
-            if row % 2 == 1:
-                offset = cell_w / 2
-
-            img = resize_and_rotate(
-                motif["image"],
-                motif["scale"],
-                motif["rotation"]
-            )
-
-            x = int(
-                col * cell_w
-                + offset
-                + cell_w / 2
-                - img.width / 2
-            )
-
-            y = int(
-                row * cell_h
-                + cell_h / 2
-                - img.height / 2
-            )
-
-            paste_with_wrap(
+            # Original motif
+            draw_single_motif(
                 canvas,
-                img,
-                x,
-                y
+                motif
             )
 
-    # --------------------------------------------------------
-    # HALF DROP
-    # --------------------------------------------------------
+            # Additional scattered copies
+            for _ in range(4):
 
-    elif st.session_state.layout == "Half Drop":
+                scattered = motif.copy()
 
-        count = len(motifs)
+                scattered["x"] = rng.uniform(
+                    0,
+                    100
+                )
 
-        if count == 0:
-            return canvas
+                scattered["y"] = rng.uniform(
+                    0,
+                    100
+                )
 
-        columns = 3
-        rows = math.ceil(count / columns)
+                scattered["rotation"] = (
+                    motif["rotation"]
+                    + rng.randint(-25, 25)
+                )
 
-        cell_w = tile / columns
-        cell_h = tile / rows
+                scattered["scale"] = int(
+                    motif["scale"]
+                    * rng.uniform(0.70, 1.25)
+                )
 
-        for i, motif in enumerate(motifs):
-
-            col = i % columns
-            row = i // columns
-
-            offset = 0
-
-            if col % 2 == 1:
-                offset = cell_h / 2
-
-            img = resize_and_rotate(
-                motif["image"],
-                motif["scale"],
-                motif["rotation"]
-            )
-
-            x = int(
-                col * cell_w
-                + cell_w / 2
-                - img.width / 2
-            )
-
-            y = int(
-                row * cell_h
-                + cell_h / 2
-                + offset
-                - img.height / 2
-            )
-
-            paste_with_wrap(
-                canvas,
-                img,
-                x,
-                y
-            )
-
-    # --------------------------------------------------------
-    # SCATTER
-    # --------------------------------------------------------
-
-    elif st.session_state.layout == "Scatter":
-
-        positions = [
-            (18, 20),
-            (52, 18),
-            (82, 25),
-            (25, 55),
-            (66, 50),
-            (88, 70),
-            (12, 84),
-            (48, 82),
-            (75, 90)
-        ]
-
-        for i, motif in enumerate(motifs):
-
-            img = resize_and_rotate(
-                motif["image"],
-                motif["scale"],
-                motif["rotation"]
-            )
-
-            px, py = positions[i % len(positions)]
-
-            x = int(
-                px * tile / 100
-                - img.width / 2
-            )
-
-            y = int(
-                py * tile / 100
-                - img.height / 2
-            )
-
-            paste_with_wrap(
-                canvas,
-                img,
-                x,
-                y
-            )
-
-    # --------------------------------------------------------
-    # MIRROR
-    # --------------------------------------------------------
-
-    elif st.session_state.layout == "Mirror":
-
-        for i, motif in enumerate(motifs):
-
-            img = resize_and_rotate(
-                motif["image"],
-                motif["scale"],
-                motif["rotation"]
-            )
-
-            base_x = int(
-                motif["x"] * tile / 100
-                - img.width / 2
-            )
-
-            base_y = int(
-                motif["y"] * tile / 100
-                - img.height / 2
-            )
-
-            paste_with_wrap(
-                canvas,
-                img,
-                base_x,
-                base_y
-            )
-
-            mirrored = img.transpose(
-                Image.Transpose.FLIP_LEFT_RIGHT
-            )
-
-            paste_with_wrap(
-                canvas,
-                mirrored,
-                tile - base_x - img.width,
-                base_y
-            )
+                draw_single_motif(
+                    canvas,
+                    scattered
+                )
 
     return canvas
 
 
-# ------------------------------------------------------------
-# SIDEBAR
-# ------------------------------------------------------------
+def make_repeat_preview(tile, columns, rows):
+    """Repeat the finished tile to show a larger pattern preview."""
 
-st.sidebar.header("Pattern Settings")
+    tile_width, tile_height = tile.size
 
-st.session_state.tile_size = st.sidebar.selectbox(
-    "Repeat Tile Size",
-    [600, 800, 1000, 1200, 1600, 2000],
-    index=2
-)
-
-st.session_state.background_color = st.sidebar.color_picker(
-    "Background Color",
-    "#FFFFFF"
-)
-
-st.sidebar.markdown("---")
-
-st.sidebar.subheader("Layout")
-
-layout_options = [
-    "Free Arrange",
-    "Grid",
-    "Brick",
-    "Half Drop",
-    "Scatter",
-    "Mirror"
-]
-
-selected_layout = st.sidebar.radio(
-    "Choose a layout",
-    layout_options,
-    index=layout_options.index(
-        st.session_state.layout
+    preview = Image.new(
+        "RGBA",
+        (
+            tile_width * columns,
+            tile_height * rows
+        )
     )
-)
 
-st.session_state.layout = selected_layout
+    for row in range(rows):
+        for column in range(columns):
 
-# ------------------------------------------------------------
-# RESET
-# ------------------------------------------------------------
+            preview.alpha_composite(
+                tile,
+                (
+                    column * tile_width,
+                    row * tile_height
+                )
+            )
 
-if st.sidebar.button("Reset All Motifs"):
-    st.session_state.motifs = []
-    st.rerun()
+    return preview
+
+
+def image_to_bytes(image):
+    """Convert PIL image to downloadable PNG bytes."""
+
+    buffer = io.BytesIO()
+
+    image.save(
+        buffer,
+        format="PNG"
+    )
+
+    buffer.seek(0)
+
+    return buffer.getvalue()
+
 
 # ============================================================
-# STEP 1 — UPLOAD
+# TITLE
+# ============================================================
+
+st.title("✦ Pattern Studio")
+
+st.write(
+    "Upload motifs, arrange them, create seamless repeats, "
+    "and export your finished pattern."
+)
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+with st.sidebar:
+
+    st.header("Pattern Settings")
+
+    # --------------------------------------------------------
+    # TILE SIZE
+    # --------------------------------------------------------
+
+    tile_preset = st.selectbox(
+        "Tile Size",
+        [
+            "1000 × 1000",
+            "2000 × 2000",
+            "3000 × 3000",
+            "Custom"
+        ]
+    )
+
+    if tile_preset == "Custom":
+
+        tile_width = st.number_input(
+            "Width",
+            min_value=100,
+            max_value=10000,
+            value=2000,
+            step=100
+        )
+
+        tile_height = st.number_input(
+            "Height",
+            min_value=100,
+            max_value=10000,
+            value=2000,
+            step=100
+        )
+
+    else:
+
+        size = tile_preset.split(" × ")
+
+        tile_width = int(size[0])
+        tile_height = int(size[1])
+
+    # --------------------------------------------------------
+    # BACKGROUND
+    # --------------------------------------------------------
+
+    st.subheader("Background")
+
+    background_color = st.color_picker(
+        "Background Color",
+        "#FFFFFF"
+    )
+
+    # --------------------------------------------------------
+    # REPEAT
+    # --------------------------------------------------------
+
+    st.subheader("Repeat Type")
+
+    layout = st.selectbox(
+        "Layout",
+        [
+            "Grid / Straight",
+            "Half-Drop",
+            "Brick / Half-Brick",
+            "Mirror",
+            "Scatter"
+        ]
+    )
+
+    # --------------------------------------------------------
+    # PREVIEW
+    # --------------------------------------------------------
+
+    st.subheader("Preview")
+
+    preview_columns = st.slider(
+        "Columns",
+        1,
+        5,
+        3
+    )
+
+    preview_rows = st.slider(
+        "Rows",
+        1,
+        5,
+        3
+    )
+
+    # --------------------------------------------------------
+    # SCATTER SEED
+    # --------------------------------------------------------
+
+    if layout == "Scatter":
+
+        st.subheader("Scatter")
+
+        if st.button("↻ New Scatter Arrangement"):
+
+            st.session_state.seed = random.randint(
+                0,
+                1000000
+            )
+
+            st.rerun()
+
+
+# ============================================================
+# MOTIF UPLOAD
 # ============================================================
 
 st.header("1. Upload Motifs")
 
 uploaded_files = st.file_uploader(
-    "Upload your floral, botanical, geometric, or other motif artwork.",
-    type=["png", "jpg", "jpeg"],
+    "Upload one or more motif images",
+    type=[
+        "png",
+        "jpg",
+        "jpeg",
+        "webp"
+    ],
     accept_multiple_files=True
 )
 
 if uploaded_files:
 
-    existing_names = {
+    existing_names = [
         motif["name"]
         for motif in st.session_state.motifs
-    }
+    ]
 
     for uploaded_file in uploaded_files:
 
         if uploaded_file.name in existing_names:
             continue
 
-        try:
+        image = Image.open(
+            uploaded_file
+        ).convert("RGBA")
 
-            image = Image.open(
-                uploaded_file
-            ).convert("RGBA")
+        motif = create_motif(
+            image,
+            uploaded_file.name
+        )
 
-            st.session_state.motifs.append(
-                {
-                    "name": uploaded_file.name,
-                    "image": image,
-                    "x": 50,
-                    "y": 50,
-                    "scale": 0.35,
-                    "rotation": 0
-                }
-            )
+        st.session_state.motifs.append(
+            motif
+        )
 
-        except Exception:
-            st.error(
-                f"Could not load {uploaded_file.name}"
-            )
+    st.success(
+        f"{len(st.session_state.motifs)} motif(s) loaded."
+    )
+
 
 # ============================================================
-# STEP 2 — MOTIFS
+# MOTIF CONTROLS
 # ============================================================
 
-st.header("2. Motifs")
+st.header("2. Arrange Your Motifs")
 
 if not st.session_state.motifs:
 
     st.info(
-        "Upload one or more motifs above to begin."
+        "Upload one or more motif images above to begin."
     )
 
 else:
-
-    st.write(
-        f"{len(st.session_state.motifs)} motif(s) loaded."
-    )
 
     for index, motif in enumerate(
         st.session_state.motifs
     ):
 
         with st.expander(
-            f"{index + 1}. {motif['name']}",
+            f"✦ {motif['name']}",
             expanded=True
         ):
 
-            col1, col2 = st.columns(
-                [1, 2]
+            control_col, preview_col = st.columns(
+                [2, 1]
             )
 
-            with col1:
+            # ------------------------------------------------
+            # CONTROLS
+            # ------------------------------------------------
 
-                st.image(
-                    motif["image"],
-                    caption=motif["name"],
-                    width=180
+            with control_col:
+
+                visible = st.checkbox(
+                    "Show motif",
+                    value=motif["visible"],
+                    key=f"visible_{motif['id']}"
                 )
 
-                if st.button(
-                    "Remove Motif",
-                    key=f"remove_{index}"
-                ):
+                motif["visible"] = visible
 
-                    st.session_state.motifs.pop(
-                        index
-                    )
-
-                    st.rerun()
-
-            with col2:
-
-                st.markdown(
-                    "**Position**"
-                )
-
+                # LEFT / RIGHT
                 motif["x"] = st.slider(
-                    "Horizontal Position",
-                    min_value=0,
-                    max_value=100,
-                    value=int(motif["x"]),
-                    key=f"x_{index}"
+                    "Move Left / Right",
+                    min_value=-50.0,
+                    max_value=150.0,
+                    value=float(motif["x"]),
+                    step=1.0,
+                    key=f"x_{motif['id']}"
                 )
 
+                # UP / DOWN
                 motif["y"] = st.slider(
-                    "Vertical Position",
-                    min_value=0,
-                    max_value=100,
-                    value=int(motif["y"]),
-                    key=f"y_{index}"
+                    "Move Up / Down",
+                    min_value=-50.0,
+                    max_value=150.0,
+                    value=float(motif["y"]),
+                    step=1.0,
+                    key=f"y_{motif['id']}"
                 )
 
-                st.markdown(
-                    "**Size & Rotation**"
-                )
-
+                # SIZE
                 motif["scale"] = st.slider(
-                    "Motif Size",
-                    min_value=0.05,
-                    max_value=1.50,
-                    value=float(motif["scale"]),
-                    step=0.05,
-                    key=f"scale_{index}"
+                    "Size",
+                    min_value=10,
+                    max_value=400,
+                    value=int(motif["scale"]),
+                    step=5,
+                    key=f"scale_{motif['id']}"
                 )
 
+                # ROTATION
                 motif["rotation"] = st.slider(
                     "Rotation",
                     min_value=-180,
                     max_value=180,
                     value=int(motif["rotation"]),
-                    step=5,
-                    key=f"rotation_{index}"
+                    step=1,
+                    key=f"rotation_{motif['id']}"
                 )
 
+                # ------------------------------------------------
+                # DUPLICATE / DELETE
+                # ------------------------------------------------
+
+                button_col1, button_col2 = st.columns(2)
+
+                with button_col1:
+
+                    if st.button(
+                        "Duplicate",
+                        key=f"duplicate_{motif['id']}"
+                    ):
+
+                        new_motif = motif.copy()
+
+                        new_motif["id"] = (
+                            st.session_state.next_id
+                        )
+
+                        st.session_state.next_id += 1
+
+                        new_motif["name"] = (
+                            motif["name"]
+                            + " copy"
+                        )
+
+                        new_motif["x"] = (
+                            motif["x"] + 10
+                        ) % 100
+
+                        new_motif["y"] = (
+                            motif["y"] + 10
+                        ) % 100
+
+                        st.session_state.motifs.insert(
+                            index + 1,
+                            new_motif
+                        )
+
+                        st.rerun()
+
+                with button_col2:
+
+                    if st.button(
+                        "Delete",
+                        key=f"delete_{motif['id']}"
+                    ):
+
+                        st.session_state.motifs.pop(
+                            index
+                        )
+
+                        st.rerun()
+
+            # ------------------------------------------------
+            # MOTIF PREVIEW
+            # ------------------------------------------------
+
+            with preview_col:
+
+                preview_image = resize_motif(
+                    motif["image"],
+                    motif["scale"]
+                )
+
+                preview_image = rotate_motif(
+                    preview_image,
+                    motif["rotation"]
+                )
+
+                st.image(
+                    preview_image,
+                    caption=motif["name"],
+                    use_container_width=True
+                )
+
+
 # ============================================================
-# STEP 3 — PATTERN PREVIEW
+# RESET
 # ============================================================
+
+if st.session_state.motifs:
+
+    st.divider()
+
+    if st.button("Reset All Motifs"):
+
+        st.session_state.motifs = []
+
+        st.session_state.next_id = 1
+
+        st.rerun()
+
+
+# ============================================================
+# GENERATE PATTERN
+# ============================================================
+
+st.divider()
 
 st.header("3. Pattern Preview")
 
 if st.session_state.motifs:
 
-    pattern = build_pattern()
+    # Convert hex background to RGBA
+    bg = background_color.lstrip("#")
+
+    background_rgba = (
+        int(bg[0:2], 16),
+        int(bg[2:4], 16),
+        int(bg[4:6], 16),
+        255
+    )
+
+    # Generate tile
+    tile = make_tile(
+        tile_width,
+        tile_height,
+        background_rgba,
+        st.session_state.motifs,
+        layout
+    )
+
+    # Generate larger preview
+    full_preview = make_repeat_preview(
+        tile,
+        preview_columns,
+        preview_rows
+    )
 
     st.image(
-        pattern,
-        caption=f"{st.session_state.layout} • {st.session_state.tile_size}px repeat tile",
+        full_preview,
+        caption=f"{layout} Repeat",
         use_container_width=True
     )
 
-    # --------------------------------------------------------
-    # QUICK INFO
-    # --------------------------------------------------------
+    # ========================================================
+    # DOWNLOAD
+    # ========================================================
 
-    st.markdown(
-        f"""
-**Current Layout:** {st.session_state.layout}  
-**Tile Size:** {st.session_state.tile_size} × {st.session_state.tile_size} px  
-**Motifs:** {len(st.session_state.motifs)}
-"""
+    st.subheader("Export")
+
+    tile_bytes = image_to_bytes(
+        tile
+    )
+
+    st.download_button(
+        label="⬇ Download Pattern Tile as PNG",
+        data=tile_bytes,
+        file_name="pattern_tile.png",
+        mime="image/png"
+    )
+
+    # ========================================================
+    # TILE INFORMATION
+    # ========================================================
+
+    st.caption(
+        f"Export size: {tile_width} × {tile_height} px"
     )
 
 else:
 
     st.info(
-        "Your pattern preview will appear here."
+        "Upload motifs to generate your pattern."
     )
 
-# ============================================================
-# STEP 4 — EXPORT
-# ============================================================
-
-st.header("4. Export")
-
-if st.session_state.motifs:
-
-    export_pattern = build_pattern()
-
-    png_output = io.BytesIO()
-
-    export_pattern.save(
-        png_output,
-        format="PNG"
-    )
-
-    png_output.seek(0)
-
-    st.download_button(
-        label="⬇️ Download Repeat Tile as PNG",
-        data=png_output,
-        file_name="pattern_studio_repeat.png",
-        mime="image/png"
-    )
-
-    st.caption(
-        "The exported PNG contains the repeat tile shown in the preview."
-    )
 
 # ============================================================
 # FOOTER
@@ -636,5 +728,5 @@ if st.session_state.motifs:
 st.divider()
 
 st.caption(
-    "Pattern Studio • Version 1"
+    "Pattern Studio • Create • Repeat • Export"
 )
